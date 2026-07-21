@@ -698,6 +698,13 @@ export const docsView = (
           lazyDocsContent(Page.Core.CrashView.view, [model.copiedSnippets, h]),
           Page.Core.CrashView.tableOfContents,
         ),
+      CoreViewTransitions: () =>
+        withTableOfContents(
+          lazyDocsContent(Page.Core.ViewTransitions.view, [
+            model.copiedSnippets,
+          ]),
+          Page.Core.ViewTransitions.tableOfContents,
+        ),
       CoreSlowWarnings: () =>
         withTableOfContents(
           lazyDocsContent(Page.Core.Slow.view, [model.copiedSnippets, h]),
