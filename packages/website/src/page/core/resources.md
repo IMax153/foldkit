@@ -8,7 +8,7 @@ Commands are self-contained by default. Each execution starts fresh with no shar
 Resources are kitchen equipment: the oven, the stand mixer, the deep fryer. They’re turned on when the kitchen opens and run all night. Every dish (Command) can use them. You don’t buy a new oven per order. An `RpcClient` and an analytics client are the same: expensive singletons that live for the entire app lifecycle. Need multiple pieces of equipment? Combine them with `Layer.mergeAll`.
 :::
 
-Define a service using [Context.Service](https://effect.website/docs/requirements-management/services/), then pass its default layer to `makeApplication` via the `resources` config field. The runtime builds the Layer once, the first time it is needed: at startup in an app that declares Subscriptions (their pipelines run for the application’s lifetime), otherwise when the first Command runs. The built services are shared for the application’s lifetime and released at teardown. Commands access a service by yielding its tag.
+Define a service using [Context.Service](https://effect.website/docs/requirements-management/services/), then pass its default layer to `makeApplication` via the `resources` config field. The runtime builds the Layer once, the first time it is needed: at startup in an app that declares flags (they resolve before `init`) or Subscriptions (their pipelines run for the application’s lifetime), otherwise when the first Command runs. The built services are shared for the application’s lifetime and released at teardown. Commands access a service by yielding its tag.
 
 ::Snippet{name="resources" label="resources example"}
 
@@ -28,6 +28,16 @@ Run the criteria over the common cases and the split falls out. `HttpClient` def
 ::Snippet{name="resourcesPerCommandHttp" label="per-Command HTTP example"}
 
 An HTTP client can still graduate. When an app grows many HTTP Commands, or shares a derived `HttpApiClient` across modules, provide `Http.layer` once via `resources` instead. The moment you find yourself writing a `withClient` helper to cut the repetition is the signal. Providing at the edge also helps tests: the Command’s Effect keeps `HttpClient` in its requirements, so an Effect-level test can provide a mock with `Layer.succeed(HttpClient.HttpClient, mockClient)` directly. A per-Command provide needs a separately exported raw Effect to test the same way.
+
+## Resources in Flags
+
+The `flags` Effect can require services too. Declare them in its type and the runtime provides them from the same `resources` Layer it gives Commands and Subscriptions, so a client needed both at startup and by Commands is constructed once rather than once per consumer.
+
+::Snippet{name="resourcesFlags" label="flags consuming a resource"}
+
+Flags resolve before `init`, so an app that declares them builds the Layer at startup rather than on the first Command. That also changes what a broken Layer looks like: a build failure during flag resolution happens before the first render, so there is no Model for the crash view to render against and the failure surfaces as an unhandled defect instead. A Layer that fails later still gets the crash view.
+
+Requirements are checked at the `makeApplication` and `makeElement` boundaries. A flags Effect requiring a service that `resources` does not provide is a compile error, not a runtime one. Provide a service the flags Effect alone needs with `Effect.provide` inside `flags` instead, exactly as a Command does: `KeyValueStore` reading persisted state at startup is the common case, and it belongs there rather than in `resources`.
 
 ## Providing Multiple Services
 
