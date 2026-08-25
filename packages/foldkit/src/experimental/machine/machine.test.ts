@@ -7,13 +7,14 @@ import {
   Schema as S,
   Stream,
 } from 'effect'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import * as Command from '../../command/public.js'
 import * as ManagedResource from '../../managedResource/public.js'
 import { defineMessageUnion, ts } from '../../schema/index.js'
 import { evo } from '../../struct/index.js'
 import * as Subscription from '../../subscription/public.js'
+import * as Update from '../../update/index.js'
 import { define, otherwise, to, when } from './machine.js'
 
 // REMOTE DATA
@@ -218,33 +219,31 @@ const AppModel = S.Struct({
 })
 type AppModel = typeof AppModel.Type
 
-type AppUpdateReturn = [
-  AppModel,
-  ReadonlyArray<Command.Command<ConnectionMessage>>,
-]
-const withAppUpdateReturn = M.withReturnType<AppUpdateReturn>()
+type AppUpdateReturn = Update.Return<AppModel, ConnectionMessage>
 
-const update = (model: AppModel, message: ConnectionMessage): AppUpdateReturn =>
-  M.value(message).pipe(
-    withAppUpdateReturn,
-    M.tag(
-      'ClickedConnect',
-      'ClickedDisconnect',
-      'SocketOpened',
-      'SocketErrored',
-      'SocketClosed',
-      'TimedOutBackoff',
-      connectionMessage => {
-        const [nextConnection, commands] = connectionMachine.transition(
-          model.connection,
-          connectionMessage,
-        )
-        return [evo(model, { connection: () => nextConnection }), commands]
-      },
-    ),
-    M.tag('ReleasedSocket', 'CompletedLogTransition', () => [model, []]),
-    M.exhaustive,
-  )
+const foldConnection = Update.foldChild({
+  update: connectionMachine.transition,
+  read: (model: AppModel) => Option.some(model.connection),
+  write: (model, nextConnection) =>
+    evo(model, { connection: () => nextConnection }),
+  toParentMessage: (message: ConnectionMessage) => message,
+})
+
+const update = (model: AppModel, message: ConnectionMessage) =>
+  ConnectionMessage.match<AppUpdateReturn>(message, {
+    ClickedConnect: connectionMessage =>
+      foldConnection(model, connectionMessage),
+    ClickedDisconnect: connectionMessage =>
+      foldConnection(model, connectionMessage),
+    SocketOpened: connectionMessage => foldConnection(model, connectionMessage),
+    SocketErrored: connectionMessage =>
+      foldConnection(model, connectionMessage),
+    SocketClosed: connectionMessage => foldConnection(model, connectionMessage),
+    TimedOutBackoff: connectionMessage =>
+      foldConnection(model, connectionMessage),
+    ReleasedSocket: () => ({ model }),
+    CompletedLogTransition: () => ({ model }),
+  })
 
 // The Machine owns transitions only. Lifecycle effects stay in ordinary
 // primitives gated on the state tag. The socket is a ManagedResource that
@@ -670,29 +669,32 @@ describe('remote data machine', () => {
   })
 
   it('transitions along the obvious edges', () => {
-    const [loading] = remoteDataMachine.transition(
+    const fetchClick = remoteDataMachine.transition(
       Idle(),
       RemoteDataMessage.ClickedFetch(),
     )
-    expect(loading).toStrictEqual(Loading())
+    expectTypeOf(fetchClick).toEqualTypeOf<
+      Update.Return<RemoteData, RemoteDataMessage>
+    >()
+    expect(fetchClick.model).toStrictEqual(Loading())
 
-    const [ok] = remoteDataMachine.transition(
+    const fetchSuccess = remoteDataMachine.transition(
       Loading(),
       RemoteDataMessage.SucceededFetch({ data: 'payload' }),
     )
-    expect(ok).toStrictEqual(Ok({ data: 'payload' }))
+    expect(fetchSuccess.model).toStrictEqual(Ok({ data: 'payload' }))
 
-    const [errored] = remoteDataMachine.transition(
+    const fetchFailure = remoteDataMachine.transition(
       Loading(),
       RemoteDataMessage.FailedFetch({ error: 'boom' }),
     )
-    expect(errored).toStrictEqual(Error({ error: 'boom' }))
+    expect(fetchFailure.model).toStrictEqual(Error({ error: 'boom' }))
 
-    const [retrying] = remoteDataMachine.transition(
+    const fetchRetry = remoteDataMachine.transition(
       Error({ error: 'boom' }),
       RemoteDataMessage.ClickedRetry(),
     )
-    expect(retrying).toStrictEqual(Loading())
+    expect(fetchRetry.model).toStrictEqual(Loading())
   })
 
   it('reports unmatched messages as Ignored without changing state', () => {
@@ -709,12 +711,12 @@ describe('remote data machine', () => {
       state: Idle(),
     })
 
-    const [unchanged, commands] = remoteDataMachine.transition(
+    const ignoredRetry = remoteDataMachine.transition(
       idle,
       RemoteDataMessage.ClickedRetry(),
     )
-    expect(unchanged).toBe(idle)
-    expect(commands).toEqual([])
+    expect(ignoredRetry).toEqual({ model: idle })
+    expect(Object.hasOwn(ignoredRetry, 'commands')).toBe(false)
   })
 
   it('exposes the edge set as data', () => {
@@ -780,11 +782,11 @@ describe('remote data machine', () => {
 
 describe('connection machine', () => {
   it('walks the happy path and emits the edge command', () => {
-    const [connecting] = connectionMachine.transition(
+    const connectClick = connectionMachine.transition(
       Disconnected(),
       ConnectionMessage.ClickedConnect(),
     )
-    expect(connecting).toStrictEqual(Connecting({ attemptCount: 1 }))
+    expect(connectClick.model).toStrictEqual(Connecting({ attemptCount: 1 }))
 
     const result = connectionMachine.step(
       Connecting({ attemptCount: 1 }),
@@ -810,27 +812,29 @@ describe('connection machine', () => {
   })
 
   it('reconnects with exponential backoff below the attempt limit', () => {
-    const [reconnecting] = connectionMachine.transition(
+    const socketError = connectionMachine.transition(
       Connecting({ attemptCount: 4 }),
       ConnectionMessage.SocketErrored({ reason: 'boom' }),
     )
-    expect(reconnecting).toStrictEqual(
+    expect(socketError.model).toStrictEqual(
       Reconnecting({ attemptCount: 4, delayMillis: 2000 }),
     )
 
-    const [connectingAgain] = connectionMachine.transition(
+    const backoffTimeout = connectionMachine.transition(
       Reconnecting({ attemptCount: 4, delayMillis: 2000 }),
       ConnectionMessage.TimedOutBackoff(),
     )
-    expect(connectingAgain).toStrictEqual(Connecting({ attemptCount: 5 }))
+    expect(backoffTimeout.model).toStrictEqual(Connecting({ attemptCount: 5 }))
   })
 
   it('fails at the attempt limit via the otherwise guard', () => {
-    const [failed] = connectionMachine.transition(
+    const attemptLimitFailure = connectionMachine.transition(
       Connecting({ attemptCount: 5 }),
       ConnectionMessage.SocketErrored({ reason: 'boom' }),
     )
-    expect(failed).toStrictEqual(Failed({ attemptCount: 5, reason: 'boom' }))
+    expect(attemptLimitFailure.model).toStrictEqual(
+      Failed({ attemptCount: 5, reason: 'boom' }),
+    )
   })
 
   it('ignores messages with no edge from the current state', () => {
@@ -901,19 +905,19 @@ describe('connection machine', () => {
 
 describe('guard lists', () => {
   it('fires a boolean guard on true and falls through to otherwise on false', () => {
-    const [reconnecting] = booleanGuardMachine.transition(
+    const belowLimitSocketError = booleanGuardMachine.transition(
       Connecting({ attemptCount: 2 }),
       ConnectionMessage.SocketErrored({ reason: 'boom' }),
     )
-    expect(reconnecting).toStrictEqual(
+    expect(belowLimitSocketError.model).toStrictEqual(
       Reconnecting({ attemptCount: 2, delayMillis: 500 }),
     )
 
-    const [failed] = booleanGuardMachine.transition(
+    const atLimitSocketError = booleanGuardMachine.transition(
       Connecting({ attemptCount: MAX_CONNECT_ATTEMPTS }),
       ConnectionMessage.SocketErrored({ reason: 'boom' }),
     )
-    expect(failed).toStrictEqual(
+    expect(atLimitSocketError.model).toStrictEqual(
       Failed({ attemptCount: MAX_CONNECT_ATTEMPTS, reason: 'boom' }),
     )
   })
@@ -932,12 +936,11 @@ describe('guard lists', () => {
       state: atLimit,
     })
 
-    const [unchanged, commands] = guardValueMachine.transition(
+    const declinedSocketError = guardValueMachine.transition(
       atLimit,
       ConnectionMessage.SocketErrored({ reason: 'boom' }),
     )
-    expect(unchanged).toBe(atLimit)
-    expect(commands).toEqual([])
+    expect(declinedSocketError).toEqual({ model: atLimit })
   })
 })
 
@@ -945,32 +948,32 @@ describe('state tag extraction', () => {
   it('reads tags from members whose _tag is a plain Literal', () => {
     expect(plainTagMachine.stateTags).toEqual(['PlainIdle', 'PlainActive'])
 
-    const [active] = plainTagMachine.transition(
+    const fetchClick = plainTagMachine.transition(
       { _tag: 'PlainIdle' },
       RemoteDataMessage.ClickedFetch(),
     )
-    expect(active).toStrictEqual({ _tag: 'PlainActive' })
+    expect(fetchClick.model).toStrictEqual({ _tag: 'PlainActive' })
   })
 })
 
 describe('type-level guarantees', () => {
   it('narrows state and message to the table position without annotations', () => {
-    const [failed] = narrowingMachine.transition(
+    const socketError = narrowingMachine.transition(
       Connecting({ attemptCount: 0 }),
       ConnectionMessage.SocketErrored({ reason: 'boom' }),
     )
-    expect(failed).toStrictEqual(
+    expect(socketError.model).toStrictEqual(
       Failed({ attemptCount: 0, reason: 'Connecting SocketErrored boom' }),
     )
   })
 
   it('passes the guard value into the matching edge', () => {
-    const [reconnecting] = guardValueMachine.transition(
+    const socketError = guardValueMachine.transition(
       Connecting({ attemptCount: 2 }),
       ConnectionMessage.SocketErrored({ reason: 'offline' }),
     )
 
-    expect(reconnecting).toStrictEqual(
+    expect(socketError.model).toStrictEqual(
       Reconnecting({ attemptCount: 3, delayMillis: 500 }),
     )
   })
@@ -998,26 +1001,22 @@ describe('type-level guarantees', () => {
 })
 
 describe('integration', () => {
-  it('splices the machine into update via evo', () => {
+  it('folds the machine directly into update', () => {
     const model: AppModel = {
       connection: Disconnected(),
       isDebugPanelOpen: false,
     }
 
-    const [nextModel, commands] = update(
-      model,
-      ConnectionMessage.ClickedConnect(),
+    const connectionUpdate = update(model, ConnectionMessage.ClickedConnect())
+    expect(connectionUpdate.model.connection).toStrictEqual(
+      Connecting({ attemptCount: 1 }),
     )
-    expect(nextModel.connection).toStrictEqual(Connecting({ attemptCount: 1 }))
-    expect(nextModel.isDebugPanelOpen).toBe(false)
-    expect(commands).toEqual([])
+    expect(connectionUpdate.model.isDebugPanelOpen).toBe(false)
+    expect(connectionUpdate.commands ?? []).toEqual([])
 
-    const [unchangedModel, ignoredCommands] = update(
-      model,
-      ConnectionMessage.ReleasedSocket(),
-    )
-    expect(unchangedModel).toBe(model)
-    expect(ignoredCommands).toEqual([])
+    const releaseUpdate = update(model, ConnectionMessage.ReleasedSocket())
+    expect(releaseUpdate.model).toBe(model)
+    expect(releaseUpdate.commands ?? []).toEqual([])
   })
 
   it('wires the gating sketch records', () => {
@@ -1028,19 +1027,20 @@ describe('integration', () => {
 
 describe('edge command requirements', () => {
   it('threads a requirement inferred from a single edge command into R', () => {
-    const [nextState, commands] = inferredRequirementsMachine.transition(
+    const submitClick = inferredRequirementsMachine.transition(
       SubmitIdle(),
       SubmitMessage.ClickedSubmit(),
     )
-    expect(nextState).toStrictEqual(Presigning())
+    expect(submitClick.model).toStrictEqual(Presigning())
 
-    const requiresUploads: ReadonlyArray<
-      Command.Command<SubmitMessage, never, UploadsClient>
-    > = commands
-    expect(requiresUploads).toHaveLength(1)
+    expectTypeOf(submitClick.commands).toEqualTypeOf<
+      | ReadonlyArray<Command.Command<SubmitMessage, never, UploadsClient>>
+      | undefined
+    >()
+    expect(submitClick.commands ?? []).toHaveLength(1)
 
     const uploads: UploadsShape = { presign: Effect.succeed(PRESIGNED_URL) }
-    const messages = commands.map(command =>
+    const messages = (submitClick.commands ?? []).map(command =>
       Effect.runSync(
         Effect.provideService(command.effect, UploadsClient, uploads),
       ),
@@ -1051,19 +1051,20 @@ describe('edge command requirements', () => {
   })
 
   it('threads a requirement inferred from a guard-list edge command', () => {
-    const [nextState, commands] = inferredGuardRequirementsMachine.transition(
+    const submitClick = inferredGuardRequirementsMachine.transition(
       SubmitIdle(),
       SubmitMessage.ClickedSubmit(),
     )
-    expect(nextState).toStrictEqual(Presigning())
+    expect(submitClick.model).toStrictEqual(Presigning())
 
-    const requiresUploads: ReadonlyArray<
-      Command.Command<SubmitMessage, never, UploadsClient>
-    > = commands
-    expect(requiresUploads).toHaveLength(1)
+    expectTypeOf(submitClick.commands).toEqualTypeOf<
+      | ReadonlyArray<Command.Command<SubmitMessage, never, UploadsClient>>
+      | undefined
+    >()
+    expect(submitClick.commands ?? []).toHaveLength(1)
 
     const uploads: UploadsShape = { presign: Effect.succeed(PRESIGNED_URL) }
-    const messages = commands.map(command =>
+    const messages = (submitClick.commands ?? []).map(command =>
       Effect.runSync(
         Effect.provideService(command.effect, UploadsClient, uploads),
       ),
@@ -1074,20 +1075,20 @@ describe('edge command requirements', () => {
   })
 
   it('threads a requirement inferred from an otherwise fallback command', () => {
-    const [nextState, commands] =
-      inferredOtherwiseRequirementsMachine.transition(
-        SubmitIdle(),
-        SubmitMessage.ClickedSubmit(),
-      )
-    expect(nextState).toStrictEqual(Presigning())
+    const submitClick = inferredOtherwiseRequirementsMachine.transition(
+      SubmitIdle(),
+      SubmitMessage.ClickedSubmit(),
+    )
+    expect(submitClick.model).toStrictEqual(Presigning())
 
-    const requiresUploads: ReadonlyArray<
-      Command.Command<SubmitMessage, never, UploadsClient>
-    > = commands
-    expect(requiresUploads).toHaveLength(1)
+    expectTypeOf(submitClick.commands).toEqualTypeOf<
+      | ReadonlyArray<Command.Command<SubmitMessage, never, UploadsClient>>
+      | undefined
+    >()
+    expect(submitClick.commands ?? []).toHaveLength(1)
 
     const uploads: UploadsShape = { presign: Effect.succeed(PRESIGNED_URL) }
-    const messages = commands.map(command =>
+    const messages = (submitClick.commands ?? []).map(command =>
       Effect.runSync(
         Effect.provideService(command.effect, UploadsClient, uploads),
       ),
@@ -1098,19 +1099,20 @@ describe('edge command requirements', () => {
   })
 
   it('leaves R as never when no edge command needs a service', () => {
-    const [, commands] = remoteDataMachine.transition(
+    const fetchClick = remoteDataMachine.transition(
       Idle(),
       RemoteDataMessage.ClickedFetch(),
     )
 
-    const requiresNever: ReadonlyArray<
-      Command.Command<RemoteDataMessage, never, never>
-    > = commands
-    expect(requiresNever).toEqual([])
+    expectTypeOf(fetchClick.commands).toEqualTypeOf<
+      | ReadonlyArray<Command.Command<RemoteDataMessage, never, never>>
+      | undefined
+    >()
+    expect(fetchClick.commands ?? []).toEqual([])
   })
 
   it('does not collapse an edge command requirement to never', () => {
-    const [, commands] = inferredRequirementsMachine.transition(
+    const submitClick = inferredRequirementsMachine.transition(
       SubmitIdle(),
       SubmitMessage.ClickedSubmit(),
     )
@@ -1118,7 +1120,7 @@ describe('edge command requirements', () => {
     // @ts-expect-error the edge command requires UploadsClient, so R is not never
     const requiresNever: ReadonlyArray<
       Command.Command<SubmitMessage, never, never>
-    > = commands
+    > = submitClick.commands ?? []
     expect(requiresNever).toHaveLength(1)
   })
 
@@ -1126,19 +1128,21 @@ describe('edge command requirements', () => {
     const uploads: UploadsShape = { presign: Effect.succeed(PRESIGNED_URL) }
     const save: SaveShape = { save: Effect.succeed(PERSISTED_ID) }
 
-    const [presigning, presignCommands] =
-      explicitRequirementsMachine.transition(
-        SubmitIdle(),
-        SubmitMessage.ClickedSubmit(),
-      )
-    expect(presigning).toStrictEqual(Presigning())
+    const submitClick = explicitRequirementsMachine.transition(
+      SubmitIdle(),
+      SubmitMessage.ClickedSubmit(),
+    )
+    expect(submitClick.model).toStrictEqual(Presigning())
 
-    const requiresBoth: ReadonlyArray<
-      Command.Command<SubmitMessage, never, UploadsClient | SaveClient>
-    > = presignCommands
-    expect(requiresBoth).toHaveLength(1)
+    expectTypeOf(submitClick.commands).toEqualTypeOf<
+      | ReadonlyArray<
+          Command.Command<SubmitMessage, never, UploadsClient | SaveClient>
+        >
+      | undefined
+    >()
+    expect(submitClick.commands ?? []).toHaveLength(1)
 
-    const presignMessages = presignCommands.map(command =>
+    const presignMessages = (submitClick.commands ?? []).map(command =>
       Effect.runSync(
         command.effect.pipe(
           Effect.provideService(UploadsClient, uploads),
@@ -1150,14 +1154,13 @@ describe('edge command requirements', () => {
       SubmitMessage.SucceededPresign({ url: PRESIGNED_URL }),
     ])
 
-    const [persisting, persistCommands] =
-      explicitRequirementsMachine.transition(
-        Presigning(),
-        SubmitMessage.SucceededPresign({ url: PRESIGNED_URL }),
-      )
-    expect(persisting).toStrictEqual(Persisting())
+    const presignSuccess = explicitRequirementsMachine.transition(
+      Presigning(),
+      SubmitMessage.SucceededPresign({ url: PRESIGNED_URL }),
+    )
+    expect(presignSuccess.model).toStrictEqual(Persisting())
 
-    const persistMessages = persistCommands.map(command =>
+    const persistMessages = (presignSuccess.commands ?? []).map(command =>
       Effect.runSync(
         command.effect.pipe(
           Effect.provideService(UploadsClient, uploads),

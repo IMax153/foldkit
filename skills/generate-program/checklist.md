@@ -99,12 +99,30 @@ for f in $(grep -rl "HttpClient" src/); do
   grep -q "from 'effect/unstable/http'" "$f" || echo "WRONG HttpClient ORIGIN: $f"
 done
 
-# Update return type written inline at a match site instead of aliased once
-# per file. The alias itself is fine (most examples spell it by hand);
-# repeating the tuple inline is the finding. Two alternatives on purpose:
-# `withReturnType<$` catches the wrapped form where the tuple sits on the next
-# line, and `withReturnType<readonly [` catches the single-line form. Keep both.
-grep -rn "withReturnType<\s*$\|withReturnType<readonly \[" src/
+# Review update return types. Inline Update.Return at a Message.match when that
+# is its only use. Keep an UpdateReturn alias when another matcher, helper, or
+# exported signature reuses it. A hand-written plain type must include
+# outMessage?: never; prefer the framework type instead.
+rg -n 'type [A-Za-z]*UpdateReturn =|Message\.match<Update\.Return' src/
+rg -n -U 'type [A-Za-z]*UpdateReturn\s*=\s*Readonly<\{' src/
+
+# Review destructuring that names an update-result field. Application results
+# should be operation-named values consumed with dot access. Dot access keeps
+# the operation and all of its returned fields visible together, but someone can
+# still ignore outMessage. A plain domain record may be fine.
+rg -n -U 'const\s+\{[^}]*\b(model|commands|outMessage)\b[^}]*\}\s*=' src/
+
+# Literal empty Commands arrays. foldkit/no-empty-commands-array covers source
+# files where the rule is active. Review test files and any disabled paths too.
+# A producer with statically no Commands omits the field. A computed Commands
+# collection is returned directly without checking whether it is empty.
+rg -n -U '\bcommands\s*:\s*\[\s*\]' src/
+
+# Optional update Commands passed through ?? [] before Command.mapMessages.
+# The mapper accepts undefined and returns a concrete array, so pass result.commands
+# directly. Keep ?? [] where spreading, concatenating, executing, or asserting
+# genuinely requires an array.
+rg -n -U 'Command\.mapMessages\([^)]*commands\s*\?\?\s*\[\]' src/
 
 # T[] syntax in the return type: use ReadonlyArray<Command<Message>>
 grep -rn "readonly Command<.*>\[\]" src/
@@ -155,8 +173,8 @@ grep -rn "Array\.findFirst.*_tag" src/
 # no expect(...) and no Command.resolve(...), it's a no-op test.
 grep -rnE -A 6 "(^|[^.[:alnum:]_])scene\(" src/ --include="*.test.ts"
 
-# Single-op pipe: pipe(x, Option.match(...)) should be Option.match(x, ...)
-# These are common patterns; eyeball each hit.
+# Possible ordinary call wrapped in pipe. Check whether keeping the value first
+# carries meaning. A plain pipe(x, Option.match(...)) should be Option.match(x, ...).
 grep -rn "pipe([a-zA-Z_]*,\s*$" src/ -A 1 | grep "Option\.match\|Array\.map\|Effect\.runSync"
 
 # Length checks: use Array.match on a Model array (the predicates reject
@@ -269,15 +287,22 @@ Alongside the greps, eyeball each file's imports. Every symbol you imported shou
 
 Foldkit ships these; reaching past them is a finding, not a style choice.
 
-- [ ] Update return type is aliased once per file and passed to `Message.match<UpdateReturn>`. The update signature does not repeat `: UpdateReturn`. Use `M.withReturnType<UpdateReturn>()` only for an Effect `Match` over another tagged union inside a handler. `Update.Return<Model, Message>` (or `Update.ReturnWithOutMessage<Model, Message, OutMessage>`) is the preferred alias; a hand-written tuple alias is not itself a finding
-- [ ] Multi-step post-mutation handlers use `Update.combine(model, [...])` and `Update.refresh({ read, revalidate, write, load })` rather than hand-threaded `evo` chains and conditional Command arrays
-- [ ] Child Submodel Commands are re-tagged with `Command.mapMessages(commands, toParentMessage)`
+- [ ] A return type used only at `Message.match` is written inline as `Update.Return<Model, Message>` or `Update.ReturnWithOutMessage<Model, Message, OutMessage>`. An `UpdateReturn` alias exists only when another matcher, helper, or exported signature reuses it. The update signature does not repeat the type already supplied to the match. A hand-written plain-return type includes `outMessage?: never`
+- [ ] Update, init, boot, and component helper producers omit `commands` when they statically create no Commands. They return computed Commands collections directly without checking whether the collection is empty. They never write the literal `commands: []`
+- [ ] Update, init, boot, and component helper results are bound to values named after their operations and consumed with dot access, not destructured or renamed. Name collisions use a trailing underscore such as `init_`; child `write` parameters use `next<Field>`
+- [ ] Optional Commands pass directly to `Command.mapMessages`; `result.commands ?? []` appears only where an operation requires a concrete array
+- [ ] Dot access keeps the operation and all of its returned fields visible together but does not prevent someone from ignoring `outMessage`
+- [ ] Child results use `Update.foldChild` or `Update.foldChildStep` instead of manual unpacking
+- [ ] An OutMessage that is already known is included directly in a new result. `Update.withOutMessage` is used for an existing plain return or a value with the type `OutMessage | undefined`: an existing return is piped into the helper, while a new result literal is passed first. No local equivalent helper or conditional spread duplicates it
+- [ ] Child folds include `toParentOutMessage` only when it forwards at least one child OutMessage from the current Submodel to its parent; no blanket `toParentOutMessage: () => undefined` mapping appears
+- [ ] Two-or-more-step post-mutation handlers use `Update.combine(model, [...])` and `Update.refresh({ read, revalidate, write, load })` rather than hand-threaded `evo` chains and conditional Command arrays. One Step is not wrapped in `Update.combine`, and an inline Step parameter is named `stepModel`
+- [ ] Child Submodel results use `Update.foldChild` or `Update.foldChildStep`, which re-tag Commands through `toParentMessage`; direct `Command.mapMessages` is reserved for lower-level helpers and independent init results
 - [ ] HTTP uses `HttpClient` / `HttpClientRequest` from `effect/unstable/http`, with `Effect.provide(effect, Http.layer)` to supply the client. Not `@effect/platform` (`@effect/platform-browser` is separate and is for `BrowserKeyValueStore` / `BrowserCrypto`)
 - [ ] UI components are imported from `@foldkit/ui` by name (`import { Dialog, Input } from '@foldkit/ui'`). There is no `Ui` namespace on `foldkit`
 
 ## Effect-TS patterns
 
-- [ ] `pipe()` only for multi-step chains (not single operations)
+- [ ] `pipe()` keeps a meaningful transformed value as the subject of left-to-right data flow; ordinary single calls stay direct
 - [ ] `Message.match` for exhaustive Message matching; Effect `Match` for state unions, partial matches, fallbacks, and shared multi-tag handlers (no switch)
 - [ ] `Array.match({ onEmpty, onNonEmpty })` for branching on a Model array (not `.length === 0` / `.length > 0`, and not `Array.isArrayEmpty` / `Array.isArrayNonEmpty`, which take a mutable `Array<A>` and reject the `ReadonlyArray` that `S.Array(...)` decodes to)
 - [ ] `evo()` for Model updates (not spread)
@@ -435,8 +460,8 @@ Items without a tier marker apply universally (even to a 50-line counter). When 
 - [ ] `Equal.equals(target)` in predicates: `Array.findFirst(items, Equal.equals('Other'))` not `item => item === 'Other'`.
 - [ ] `Array.fromOption(maybeCommand)` for "zero or one command based on Option", not `Option.match` that returns `[]` vs `[cmd]`.
 - [ ] `Option.liftPredicate(value, predicate)` instead of `condition ? Option.some(value) : Option.none()`. The predicate may be a constant `() => condition` when the check doesn't use the value.
-- [ ] `pipe(...)` is multi-step only. Never `pipe(x, singleOp(...))`; call `singleOp(x, ...)` directly. (Exception: `.pipe(Effect.catch(...))` as a tail suffix is fine.)
-- [ ] When piping, data leads on its own line: `pipe(\n  data,\n  Array.map(f),\n  ...\n)`, not `pipe(data, Array.map(f), ...)`.
+- [ ] A single-transformation `pipe` has a clear data-flow reading, such as `pipe(dialogClose, Update.withOutMessage(outMessage))`; a pipe that only rearranges ordinary function application is called directly
+- [ ] In multi-line pipes, data leads on its own line: `pipe(\n  data,\n  Array.map(f),\n  ...\n)`, not `pipe(data, Array.map(f), ...)`.
 - [ ] `evo` setters are point-free when they only transform that same field: `entries: Array.map(f)` not `entries: () => Array.map(model.entries, f)`, `count: Number.increment` not `count: () => Number.increment(model.count)`. Keep `() => value` for replacement values from Messages, child updates, Commands, or other Model fields.
 - [ ] Callback destructuring when accessing a single field: `({ id }) => id === cardId` not `card => card.id === cardId`.
 
