@@ -53,6 +53,17 @@ When an ancestor and one of its descendants both match, `text` returns the desce
 | `disabled` | `boolean`                                                       | aria-disabled or the disabled attribute                                                                                                             |
 | `current`  | `boolean \| 'page' \| 'step' \| 'location' \| 'date' \| 'time'` | aria-current. `true` matches `"true"` only, `false` matches a missing attribute or `"false"`, and a token matches itself.                           |
 
+### Selector locators
+
+`selector`, `all.selector`, and the selector strings accepted by interactions and assertions query the rendered view rather than a browser DOM. They support this CSS subset:
+
+- A tag name, `#id`, or `.class` matches an element with that tag, id, or class. Tag names are case-sensitive.
+- `[attr]`, `[attr="value"]`, and `[attr^="prefix"]` match attributes. Values may use double or single quotes and may contain whitespace.
+- `:not(...)` excludes elements matching one compound selector, such as `path[d]:not([d=""])`. Its argument cannot contain a descendant combinator or a selector list. `:not()` can be nested or repeated.
+- Whitespace between compound selectors matches descendants, as in `header a`.
+
+Anything else, such as `>`, `,`, or `:first-child`, throws an error that lists this syntax.
+
 ### Scoping
 
 `within(parent, child)` scopes a single locator to a parent element. `inside(parent, ...steps)` scopes a whole block of steps. Every assertion or interaction inside the block resolves within the parent’s subtree. Use `within` for one-off scoped queries; use `inside` when several steps share the same scope. Nested `inside` calls compose.
