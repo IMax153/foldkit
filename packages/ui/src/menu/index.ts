@@ -294,21 +294,21 @@ export const DelayClearSearch = Command.define('DelayClearSearch', {
 export const DetectMovementOrAnimationEnd = Command.define(
   'DetectMovementOrAnimationEnd',
   {
-    args: { id: Schema.String },
+    args: { id: Schema.String, generation: Schema.Number },
     messages: [Message.GotAnimationMessage],
-    execute: ({ id }) =>
+    execute: ({ id, generation }) =>
       Effect.raceFirst(
         Dom.detectElementMovement(buttonSelector(id)).pipe(
           Effect.as(
             Message.GotAnimationMessage({
-              message: Animation.Message.EndedAnimation(),
+              message: Animation.Message.EndedAnimation({ generation }),
             }),
           ),
         ),
         Dom.waitForAnimationSettled(itemsSelector(id)).pipe(
           Effect.as(
             Message.GotAnimationMessage({
-              message: Animation.Message.EndedAnimation(),
+              message: Animation.Message.EndedAnimation({ generation }),
             }),
           ),
         ),
@@ -319,10 +319,12 @@ export const DetectMovementOrAnimationEnd = Command.define(
 const foldAnimationOutMessage = Animation.OutMessage.match<
   Update.Step<Model, Message>
 >({
-  StartedLeaveAnimating: () => model => ({
-    model,
-    commands: [DetectMovementOrAnimationEnd({ id: model.id })],
-  }),
+  StartedLeaveAnimating:
+    ({ generation }) =>
+    model => ({
+      model,
+      commands: [DetectMovementOrAnimationEnd({ id: model.id, generation })],
+    }),
   TransitionedOut: () => model => ({ model }),
 })
 
