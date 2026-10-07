@@ -83,7 +83,7 @@ The resulting fold reads the child, runs its update, writes it back, and lifts i
 
 ::Snippet{name="submodelFoldChild" label="Using foldChild"}
 
-`read` returns an `Option` because a routed page or keyed child may no longer exist when its Message arrives. `None` makes the fold a no-op. An always-present child returns `Option.some(model.settings)`.
+`read` returns an `Option` because a routed page or child entry may be absent from the parent Model. When `read` returns `None`, the fold leaves the parent Model unchanged. An always-present child returns `Option.some(model.settings)`.
 
 The fold is dual. `foldSettings(model, message)` runs it immediately. `foldSettings(message)` returns an `Update.Step<ParentModel, ParentMessage>` for `Update.combine`. Close over per-dispatch context in the `update` field, and apply route gates before calling the fold.
 
@@ -148,13 +148,17 @@ Foldkit throws while building the view when sibling boundaries reuse a `slotId`.
 
 A parent can hold a fixed or dynamic number of child instances.
 
-For a fixed set, give each child its own Model field and `slotId`. For a dynamic set, store the children in an array. Use the same stable identifier for the row key, `slotId`, and wrapper Message.
+For a fixed set, give each child its own Model field and `slotId`. For a dynamic set, start with an array. Use the same stable identifier for the row key, `slotId`, and wrapper Message.
 
-::Snippet{name="submodelMultipleInstances" label="Multiple instances" class="mb-4"}
+When at most one child instance is active, store one child Model and an `Option` of its key. A table with at most one open row menu can share one Menu Model. Use a collection when multiple instances need independent state at once, such as editors on several rows or progress for several uploads.
 
-`foldApplicant(entryId)` reads and writes only the matching child. When the child no longer exists, `read` returns `None` and a late Message becomes a no-op. The [job-application example](/example-apps/job-application) uses this shape for repeated education and work-history entries.
+### Folding a Child by Key {#fold-child-at}
 
-Start with an array. If profiling shows that finding and replacing a child is expensive, use a `HashMap` keyed by the same identifier. `Update.foldChild` still works because `HashMap.get` already returns an `Option`.
+::Snippet{name="submodelMultipleInstances" label="Folding a child in a collection" class="mb-4"}
+
+Use `Update.foldChildAt` to run a child update for one Submodel selected by key. `readAt` finds the child Model, and `writeAt` stores the next one. `toParentMessage` receives the key when wrapping the result Message of each child Command. If `readAt` returns `None` for that key, the fold leaves the parent Model unchanged. The [job-application example](/example-apps/job-application) stores education, work-history, and skills Submodels in arrays. Each Submodel has a stable entry ID that `foldChildAt` uses as its key.
+
+When the selected child emits an OutMessage, `foldOutMessage` takes the key and returns a matcher whose handlers produce parent Steps. If an OutMessage handler returns a child Command, give the `foldOutMessage` factory a second `FoldContext` parameter and use its lifters to wrap the Command's result Message. To forward an OutMessage, `toParentOutMessage` takes the key and returns a matcher that produces a parent OutMessage. Neither factory runs when the child emits no OutMessage.
 
 ## Memoization Across Submodel Boundaries {#memoization}
 
