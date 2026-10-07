@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `Dom` module packages common imperative browser operations as Effects for use inside your own [Commands](/core/commands). It covers focus, scrolling, programmatic clicks, dialogs, page scroll locks, inert isolation, element movement, and animation settling.
+The `Dom` module provides browser operations as Effects. They cover focus, scrolling, programmatic clicks, dialogs, page scroll locks, inert isolation, element movement, and animation settling.
 
 Use a Dom helper when a Message should cause a one-time DOM operation. For example: opening a dialog can return a Command that focuses its first input. The operation stays outside view, and its result still comes back through update as a Message.
 

@@ -1,5 +1,5 @@
 import { Schema } from 'effect'
-import { Subscription } from 'foldkit'
+import { Browser, Subscription } from 'foldkit'
 import { defineMessageUnion } from 'foldkit/message'
 import { defineTaggedUnion } from 'foldkit/schema'
 
@@ -26,7 +26,7 @@ const subscriptions = Subscription.make<Model, Message>()(entry => ({
     {
       modelToDependencies: model => ({ searchState: model.searchState }),
       dependenciesToStream: ({ searchState }) =>
-        Subscription.keyBindings<Message>({
+        Browser.streamFromKeyBindings<Message>({
           bindings: [
             {
               keys: 'Mod+K',

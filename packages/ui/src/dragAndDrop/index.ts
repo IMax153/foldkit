@@ -10,6 +10,7 @@ import {
   Stream,
   pipe,
 } from 'effect'
+import * as Browser from 'foldkit/browser'
 import * as Command from 'foldkit/command'
 import * as Dom from 'foldkit/dom'
 import { type Attribute, type HtmlBuilder, inertHtml as ih } from 'foldkit/html'
@@ -19,6 +20,7 @@ import { modifyFields } from 'foldkit/struct'
 import * as Subscription from 'foldkit/subscription'
 import * as Update from 'foldkit/update'
 
+import { documentDragStyles } from '../internal/documentDragStyles.js'
 import { attributeSelector } from '../internal/selectors.js'
 
 // MODEL
@@ -605,33 +607,6 @@ export const subscriptions = Subscription.make<Model, Message>()(entry => ({
           ),
         )
 
-        // NOTE: prevents text selection and locks cursor to grabbing during
-        // pointer drag. Uses a <style> element for cursor because inline styles
-        // on <html> don't override descendant elements' cursor values.
-        const documentDragStyles = Stream.callback<never>(() =>
-          Effect.acquireRelease(
-            Effect.sync(() => {
-              document.documentElement.style.setProperty('user-select', 'none')
-              document.documentElement.style.setProperty(
-                '-webkit-user-select',
-                'none',
-              )
-              const cursorStyle = document.createElement('style')
-              cursorStyle.textContent = '* { cursor: grabbing !important; }'
-              document.head.appendChild(cursorStyle)
-              return cursorStyle
-            }),
-            cursorStyle =>
-              Effect.sync(() => {
-                document.documentElement.style.removeProperty('user-select')
-                document.documentElement.style.removeProperty(
-                  '-webkit-user-select',
-                )
-                cursorStyle.remove()
-              }),
-          ).pipe(Effect.flatMap(() => Effect.never)),
-        )
-
         return Stream.when(
           Stream.merge(pointerEvents, documentDragStyles),
           Effect.sync(() => dragActivity === 'Active'),
@@ -665,7 +640,7 @@ export const subscriptions = Subscription.make<Model, Message>()(entry => ({
       }),
       dependenciesToStream: ({ dragActivity }) =>
         Stream.when(
-          Subscription.fromEventFilterMapPreventDefault({
+          Browser.streamFromEventFilterMapPreventDefault({
             target: document,
             type: 'keydown',
             filterMapEvent: event => {
